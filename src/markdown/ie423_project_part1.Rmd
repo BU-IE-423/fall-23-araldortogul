@@ -1,0 +1,522 @@
+---
+title: 'Project: Part 1'
+author:
+  - "Ali Can Milani 2018402171"
+  - "Aral Dörtoğul 2018402108"
+  - "Alp Emre Töken 2021402276"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    theme: flatly
+    highlight: tango
+    code_folding: hide
+    toc: true
+    toc_float: true
+    number_sections: true
+---
+
+```{r setup, include = FALSE}
+# Required libraries
+library(svglite)
+library(zoo)
+library(dplyr)
+library(lubridate)
+library(tidyr)
+library(ggplot2)
+library(rmarkdown)
+library(knitr)
+library(qcc)
+knitr::opts_chunk$set(
+      dev = 'svglite',
+      fig.ext = '.svg',
+      fig.align='center',
+      fig.width=10,
+      fig.height=12,
+      out.width='100%'
+)
+```
+
+# Introduction
+
+In the world of financial markets, the study of stock prices captivates our attention, driven by their inherent dynamism, making them a subject of enduring intrigue. This study is designed to refine our data manipulation skills through the utilization of R and Borsa İstanbul stock data. Our primary objectives encompass retrieving and organizing stock data, detecting outliers, and investigating possible correlations between stock price fluctuations and Google Trends data. This report will serve as our guide, offering valuable insights where financial analysis and data science intersect.
+
+<!-- Links -->
+
+-   Our markdown document can be found [here](https://bu-ie-423.github.io/fall-23-araldortogul/src/markdown/ie423.project.part1.Rmd) (.Rmd file).
+-   The data used in this study can be found [here](https://bu-ie-423.github.io/fall-23-araldortogul/src/data/part1_data.zip) (.zip file)
+
+# Data Retrieval and Manipulation
+
+The data consists of stocks of 60 companies in Borsa İstanbul from different sectors, and spans from 17 September 2012 to 23 July 2023 with 15 minute intervals.
+
+All the data can be seen in the following line plot:
+
+```{r Plot of All Data, fig.ext='.png', fig.width=14, cache=TRUE, dev='png'}
+# Import long data
+data_long <- read.csv("all_ticks_long.csv.gz")
+data_long$timestamp <- ymd_hms(data_long$timestamp)
+
+# Plot data
+data_long  %>%
+  group_by(Date = date(timestamp), short_name) %>%
+  summarize(Price = mean(price), .groups = "drop") %>%
+  ggplot(aes(x = Date, y = Price, color = short_name)) +
+  labs(title = "Line Plot of Daily Average Prices of Stocks",
+       x = "Time",
+       y = "Price",
+       color = "Stock") +
+  geom_line() +
+  scale_x_date(date_breaks = "3 months" , date_labels = "%Y %b", minor_breaks = "1 month") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 60,  hjust=1)) +
+  guides(color=guide_legend(ncol=2,byrow=TRUE))
+```
+
+The above plot gives an overall picture of the whole data, but it is difficult to interpret, because there are 60 lines depicting the stock prices of the 60 companies. To make things simpler, only a subset of the stock data will be used in this study. For this, we will pick 6 companies from at least 3 different sectors, and the time period of the data will be at least 2 years.
+
+To find such data, we need to do some data manipulation on the raw data. We will work with wide format, and first check if the data is in chronological order:
+
+```{r Import Wide Format Data}
+# Import data
+data_wide <- read.csv("all_ticks_wide.csv.gz")
+data_wide$timestamp <- ymd_hms(data_wide$timestamp)
+
+# Check if the data is in chronological order
+isChronological <- sum(diff(data_wide$timestamp) <= 0) == 0
+print(if(isChronological) 'Data is in chronological order.' else  "Data is not in chronological order.")
+```
+
+According to our analysis, the data seems to be chronological. Next, we check the NA values in the data. The table below gives us the number of NA's in each stock data of a company.
+
+```{r NA values}
+# Count NA values in each column
+ paged_table(data.frame(NACount = colSums(is.na(data_wide[,-1]))))
+```
+
+The table shows us that the raw data has so many NA's in it. On average, a company has `r round(mean(colSums(is.na(data_wide[,-1]))), digits = 2)` NA values in their data. The missing data is not favorable, so we will focus on companies with fewer amounts of NA in their stock data when choosing the companies. To be more specific, we pick the following companies since they have less than 2000 NA values in their data.
+
+-   **"ARCLK"** (*Arçelik*) and **"VESTL"** (*Vestel*) from the "home appliances" industry,
+-   **"GARAN"** (*Garanti*) and **"HALKB"** (*Halkbank*) from finance sector,
+-   and **"TTKOM"** (*Türk Telekom*) and **"TCELL"** (*Turkcell*) from telecommunication sector.
+
+We can further analyze the NAs in the data with histograms of the dates of the NA values.
+
+```{r Histograms}
+
+stocks <- c('ARCLK', 'VESTL', 'GARAN', 'HALKB', 'TTKOM', 'TCELL')
+colors <- c('ARCLK' = "#85bdde",'VESTL' = "#cb2c31", 'GARAN' = "#408f4b", 'HALKB' = "#1d518d", 'TCELL' = "#f7c546",'TTKOM' = "#54bdc7")
+# Convert subset of stocks to long format
+data_wide[, c('timestamp', stocks)] %>%
+  pivot_longer(cols = all_of(stocks), names_to='Company', values_to='Price') %>%
+  
+  # Filter NA values
+  filter(is.na(Price)) %>%
+  select(!Price) %>%
+  
+  # Plot histograms
+  ggplot(aes(x = timestamp, fill = Company)) +
+    geom_histogram(binwidth = 60*60*24*30*2, color="black") +
+    labs(title = "Histograms of NA Values of Stocks",
+       x = "Time",
+       y = "Price",
+       color = "Stock") +
+    scale_fill_manual(values = colors) +
+    scale_x_datetime(date_breaks = "2 months" , date_labels = "%Y %b",
+                     date_minor_breaks = "1 month") +
+    theme_minimal() +
+    theme(legend.position = "none",
+          axis.text.x = element_text(angle = 60,  hjust=1)) +
+    facet_wrap(~Company, ncol = 1, scales = "free_y")
+```
+
+The histograms give us a valuable insight on the distribution of the NA values throughout the whole time interval. The data before May 2013 has so many NA values, so we will focus on the data after May 2013.
+
+We will interpolate the missing values by calculating the average of the lagging and leading values. However, since Turkish economy is volatile, we don't want to try to interpolate a group of consecutive NA's and cause some unwanted bias in our data. We can check if our stock data has any time interval of at least 2 years with no consecutive NA values with the following function:
+
+```{r Funtion to Find Intervals w/o NA}
+# Function to find subsets of data of at least 2 years with no consecutive NAs
+findIntervalsWithoutAnyConsecutivetNAs <- function(df) {
+  # Data frame to store the indices
+  indices <- data.frame(FirstIndex = integer(), LastIndex = integer(),
+                        FirstDate = POSIXct(), LastDate = POSIXct(),
+                        NaCount = integer(), Company=character())
+  
+  # For each company in the data frame
+  for (company in colnames(df[,-1])) {
+    tempNaCount <- 0
+    totalNaCount <- 0
+    firstIndex <- 1
+    
+    # For each stock data for a company
+    for (index in 1:nrow(data_wide)) {
+      # If the value is NA, increment the total and temp NA count
+      if (is.na(df[index, company])) {
+        tempNaCount <- tempNaCount + 1
+        totalNaCount <- totalNaCount + 1
+      }
+      
+      # Else, decrement temp NA count by 1 (0 is minimum).
+      else {
+        tempNaCount <- max(0, tempNaCount - 1)
+      }
+      
+      # If an NA sequence of length 2 is detected or the end of the data is reached:
+      if (tempNaCount == 2 || index == nrow(df)) {
+        # Check if the interval is at least 2 years. If it is 2 years or more,
+        # add the interval to the indices data frame.
+        if ((interval(df[firstIndex, 1], df[index, 1]) %/% years(1)) >= 2) {
+          newRow <- data.frame(FirstIndex = firstIndex, LastIndex = index,
+                               FirstDate = df[firstIndex, 1], LastDate = df[index, 1],
+                               NaCount = totalNaCount, Company = company)
+          indices <- rbind(indices, newRow)
+        }
+        # Increment firstIndex for a new possible interval
+        # Decrease tempNaCount by 1
+        firstIndex <- index + 1
+        tempNaCount <- tempNaCount - 1
+        totalNaCount <- 0
+      }
+    }
+  }
+  return(indices)
+}
+```
+
+The following gives us the time intervals in our stock data without any consecutive NA's:
+
+```{r Intervals, cache=TRUE}
+indices <- findIntervalsWithoutAnyConsecutivetNAs(data_wide[,c('timestamp', stocks)])
+paged_table(indices)
+```
+
+```{r include=FALSE}
+minStartDate <- max(indices$FirstDate)
+minStartDateCompany <- indices$Company[which.max(indices$FirstIndex)]
+maxEndDate <- min(indices$LastDate)
+```
+
+We have found at least 1 interval of at least 2 years for each stock. The start date of `r minStartDateCompany` (`r minStartDate`) sets the earliest start date of the time interval. For convenience, our interval will span from the start of the next month (`r ceiling_date(minStartDate, unit = "months")`) for 30 months.
+
+```{r Time}
+minStartDate <- max(indices$FirstDate)
+start <- ceiling_date(minStartDate, unit = "months")
+end <- floor_date(start + dmonths(30), unit = "day")
+```
+
+So, our time interval will be: `r start` -- `r end`.
+
+Now, we have chosen our stocks and the time interval. We can interpolate the NA values using `na.approx` function from the `zoo` package.
+
+```{r Data Manipulation}
+stock_data <- data_wide %>%
+  select(c('timestamp', all_of(stocks))) %>%
+  filter(between(floor_date(timestamp, unit = "day"), start, end))
+
+# Interpolate NA values
+stock_data <- stock_data %>%
+  mutate(across(all_of(stocks), ~ na.approx(.x, na.rm = FALSE, maxgap=1)))
+```
+
+Following the interpolation of missing values, we are prepared to proceed with the visualization of the dataset at hand. Here is a preliminary overview of the dataset that will serve as our foundation for analysis.
+
+```{r Line Plot, fig.height=8}
+stock_data %>%
+  pivot_longer(cols = all_of(stocks),
+               names_to = 'Stock',
+               values_to = 'Price') %>%
+  group_by(Date = date(timestamp), Stock) %>%
+  summarize(Price = mean(Price), .groups = "drop") %>%
+  ggplot(aes(x = Date, y = Price, color = Stock)) +
+  labs(title = "Daily Average Stock Prices from July 2016 to 2018 December",
+       x     = "Time",
+       y     = "Price",
+       color = "Stock") +
+  geom_line() +
+  scale_x_date(date_breaks = "1 month" , date_labels = "%Y %b") +
+  scale_color_manual(values = colors) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 60,  hjust=1))
+```
+
+# Identification of Outliers using Boxplots and 3-Sigma Limits
+
+Whether it's tracking financial market trends through stocks, analyzing the impact of marketing campaigns, or understanding public health statistics, data visualization simplifies the process of comprehending and communicating the data available. Through the utilization of visual representations, we can unveil hidden insights, identify outliers, and detect anomalies, thus aiding decision-making, problem-solving, and knowledge dissemination.
+
+In the context of stock data, boxplots, which provide a concise summary of key statistical measures, are a valuable tool for investors, analysts, and researchers, offering a clear and intuitive way to explore and compare stock performance, volatility, and distribution.
+
+## Boxplots
+
+### Telecommunication
+
+The monthly boxplots for the stocks within the telecommunications sector (TCELL and TTKOM) are presented below.
+
+```{r Telecommunication boxplot}
+months <- seq(floor_date(stock_data$timestamp[1], unit = "month"),
+              floor_date(stock_data$timestamp[
+                length(stock_data$timestamp)],
+                unit = "month"),
+              by='1 month')
+
+monthLabels <- format(months, format = "%Y %b")
+
+stock_data  %>%
+  mutate(Month = factor(format(timestamp, format = "%Y %b"),
+                        levels = monthLabels)) %>%
+  pivot_longer(cols=c('TTKOM', 'TCELL'),
+               names_to='Stock',
+               values_to='Price') %>%
+  ggplot(aes(x = as.ordered(Month), y = Price, fill = Stock)) +
+  labs(title = "Monthly Boxplots of the Stock Prices in Telecommunication Sector",
+       x = "Time",
+       y = "Price",
+       fill = "Stock") +
+  geom_boxplot() +
+  scale_fill_manual(values = colors[c("TTKOM", "TCELL")]) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 60,  hjust=1))
+```
+
+When we look at the boxplots of TTKOM and TCELL shares, it seems that there is a very similar increase/decrease graph, but while there is a clear increase in TCELL stock prices in the last months of 2017 and the first months of 2018, it seems that there is a slight decrease in TTKOM stock prices and then it remains constant. While one of the two shares in the same sector shows a visible increase, the other decreases and remains constant, this can give a lot of information about these two shares, but it is not possible to make a definitive comment, so some comments can be made by looking at the words searched on Google during this time period. This situation will be examined in the next section. Apart from this, while TCELL stocks fluctuate a lot in some months, the changes in TTKOM stocks within the month seem to be more stable. While TTKOM stocks decreased by almost half at the end of 2.5 years, there is a clear increase in TCELL stocks.
+
+### Banking
+
+The monthly boxplots for the stocks within the banking sector (GARAN and HALKB) are displayed below.
+
+```{r Banking boxplot}
+stock_data  %>%
+  mutate(Month = factor(format(timestamp, format = "%Y %b"),
+                        levels = monthLabels)) %>%
+  pivot_longer(cols=c('GARAN', 'HALKB'),
+               names_to='Stock',
+               values_to='Price') %>%
+  ggplot(aes(x = as.ordered(Month), y = Price, fill = Stock)) +
+  labs(title = "Monthly Boxplots of the Stock Prices in Banking Sector",
+       x = "Time",
+       y = "Price",
+       fill = "Stock") +
+  geom_boxplot() +
+  scale_fill_manual(values = colors[c("GARAN", "HALKB")]) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 60,  hjust=1))
+```
+
+When the boxplots drawn above are examined, it can be easily seen that both shares have a very similar increase/decrease graph (trend), although there are differences from time to time. It seems that in some months there is not much fluctuation in the stock prices, and in some months there are quite a lot of ups and downs. For example, while GARAN stock prices fluctuated between a very narrow range in June 2017, in July 2018 there was a difference of approximately 2.5 stock prices between the share's highest value and its lowest value, which corresponds to approximately 33% of that month's average. Similar situations are observed in HALKB stock prices. Various reasons for these fluctuations have been attempted to be predicted in the next section.
+
+### Manufacturing
+
+Here are the monthly boxplots for the manufacturing sector, showcasing the stock performance of VESTL and ARCLK.
+
+```{r Manufacturing boxplot}
+stock_data  %>%
+  mutate(Month = factor(format(timestamp, format = "%Y %b"),
+                        levels = monthLabels)) %>%
+  pivot_longer(cols=c('ARCLK', 'VESTL'),
+               names_to='Stock',
+               values_to='Price') %>%
+  ggplot(aes(x = as.ordered(Month), y = Price, fill = Stock)) +
+  labs(title = "Monthly Boxplots of the Stock Prices in Manufacturing Sector",
+       x = "Time",
+       y = "Price",
+       fill = "Stock") +
+  geom_boxplot() +
+  scale_fill_manual(values = colors[c("ARCLK", "VESTL")]) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 60,  hjust=1))
+```
+
+When the boxplots of ARCLK and VESTL shares are examined, it appears that the two shares do not have similar trends. From the outside, it can be interpreted that the two shares have little to do with each other, but it is not possible to say such a thing for sure. Since July 2017, the two shares have started to show almost completely opposite movements. In addition, it is seen that ARCLK stock prices fluctuate more in some months and less in others, and VESTL, although there may be fluctuations from time to time, generally fluctuates less within the month. In addition, looking at the middle of 2018, the difference between the two shares decreased significantly compared to the previous months, while the difference widened again in the second half of 2018.
+
+## 3-Sigma Limits
+
+In order to detect the points which are outside the range of 3-sigma levels, we need to compute the monthly mean and standard deviation of the 6 stocks. The mean and the standard deviation of the stocks are:
+
+```{r Calculating Mean and St Dev}
+paged_table(stock_data  %>%
+  mutate(Month =
+           factor(format(timestamp, format = "%Y %b"), levels = monthLabels)) %>%
+  group_by(Month) %>%
+  summarize_at(vars(-timestamp), list(Mean = mean, StDev = sd)))
+  
+stock_data_w_mean_sd <- stock_data  %>%
+  mutate(Month =
+           factor(format(timestamp, format = "%Y %b"), levels = monthLabels)) %>%
+  group_by(Month) %>%
+  mutate(across(all_of(stocks), list(Mean = mean, StDev = sd))) %>%
+  ungroup(Month) %>%
+  select(!Month)
+```
+
+Using this table, we can calculate the monthly control limits. The following tables are data points from the 6 stocks falling outside the range of $\mu - 3 \sigma$ and $\mu + 3 \sigma$ as outliers.
+
+### ARCLK
+
+```{r ARCLK 3 Sigma}
+
+paged_table(stock_data_w_mean_sd %>%
+  select(c("timestamp", "ARCLK", "ARCLK_Mean", "ARCLK_StDev")) %>%
+  filter(!between(ARCLK, ARCLK_Mean - 3 * ARCLK_StDev, ARCLK_Mean + 3 * ARCLK_StDev)))
+```
+
+### VESTL
+
+```{r VESTL 3 Sigma}
+paged_table(stock_data_w_mean_sd %>%
+  select(c("timestamp", "VESTL", "VESTL_Mean", "VESTL_StDev")) %>%
+  filter(!between(VESTL, VESTL_Mean - 3 * VESTL_StDev, VESTL_Mean + 3 * VESTL_StDev)))
+```
+
+### GARAN
+
+```{r GARAN 3 Sigma}
+paged_table(stock_data_w_mean_sd %>%
+  select(c("timestamp", "GARAN", "GARAN_Mean", "GARAN_StDev")) %>%
+  filter(!between(GARAN, GARAN_Mean - 3 * GARAN_StDev, GARAN_Mean + 3 * GARAN_StDev)))
+```
+
+### HALKB
+
+```{r HALKB 3 Sigma}
+paged_table(stock_data_w_mean_sd %>%
+  select(c("timestamp", "HALKB", "HALKB_Mean", "HALKB_StDev")) %>%
+  filter(!between(HALKB, HALKB_Mean - 3 * HALKB_StDev, HALKB_Mean + 3 * HALKB_StDev)))
+```
+
+### TTKOM
+
+```{r TTKOM 3 Sigma}
+paged_table(stock_data_w_mean_sd %>%
+  select(c("timestamp", "TTKOM", "TTKOM_Mean", "TTKOM_StDev")) %>%
+  filter(!between(TTKOM, TTKOM_Mean - 3 * TTKOM_StDev, TTKOM_Mean + 3 * TTKOM_StDev)))
+```
+
+### TCELL
+
+```{r TCELL 3 Sigma}
+paged_table(stock_data_w_mean_sd %>%
+  select(c("timestamp", "TCELL", "TCELL_Mean", "TCELL_StDev")) %>%
+  filter(!between(TCELL, TCELL_Mean - 3 * TCELL_StDev, TCELL_Mean + 3 * TCELL_StDev)))
+```
+
+# Insights with Open Source Data
+
+In this part of the study, we're taking a closer look at how stock prices relate to the popularity of stock abbreviations on Google Trends. We're trying to find connections or trends that could help us understand what people are searching for and how it might affect the stock market. This approach could be pretty useful for traders and investors, giving them a different way to see how online searches and the stock market are connected.
+
+We have decided to check the popularity of the search keywords "IST:ARCLK", "IST:VESTL", "IST:GARAN", "IST:HALKB", "IST:TCELL", and "IST:TTKOM".
+
+```{r Import Google Trends Data}
+# Import Google Trends data
+google_trends_data <- read.csv("google_trends.csv")
+google_trends_data$Week <- dmy(google_trends_data$Week)
+
+# The following search keywords are used:
+searchKeywords <- c("IST:ARCLK", "IST:VESTL", "IST:GARAN", "IST:HALKB", "IST:TCELL", "IST:TTKOM")
+
+keywordColors <- colors
+names(keywordColors) <- searchKeywords
+
+# Renaming column names
+colnames(google_trends_data) <- c("Week", searchKeywords)
+```
+
+Here is a plot of the popularity of the keywords over time:
+
+```{r Line Plot of the Google Trends Data}
+# Line plot of the Google Trends data:
+google_trends_data %>%
+  pivot_longer(cols = all_of(searchKeywords),
+               names_to = 'SearchKeywords',
+               values_to = 'Price') %>%
+  ggplot() +
+  geom_line(aes(x = Week, y = Price, color = SearchKeywords)) +
+  labs(title = "Popularity of the Search Keywords between July 2016 and December 2018",
+       x = "Time",
+       y = "Price",
+       color = "Search Keywords") +
+  facet_wrap(~SearchKeywords, ncol = 1) +
+  scale_x_date(date_breaks = "1 month", date_labels = "%Y %b") +
+  scale_color_manual(values = keywordColors) +
+  theme_minimal() +
+  theme(legend.position = "none",
+        axis.text.x = element_text(angle = 60,  hjust=1))
+```
+Since the data obtained from Google Trends is weekly, we convert our stock data by taking the weekly average of the prices before comparing them with the Google Trends data:
+
+```{r Weekly Stock Data}
+weekly_stock_data <- stock_data %>%
+  mutate(Week = ceiling_date(timestamp, unit = "1 week")) %>%
+  group_by(Week) %>%
+  summarize_at(vars(-timestamp), mean) %>%
+  filter(between(Week, first(google_trends_data$Week), last(google_trends_data$Week)))
+
+weekly_stock_data %>%
+  pivot_longer(cols = all_of(stocks),
+               names_to = 'Stock',
+               values_to = 'Price') %>%
+  ggplot() +
+  geom_line(aes(x = Week, y = Price, color = Stock)) +
+  labs(title = "Weekly Average Stock Prices between July 2016 and December 2018",
+       x = "Time",
+       y = "Price",
+       color = "Stock") +
+  facet_wrap(~Stock, ncol = 1) +
+  scale_x_datetime(date_breaks = "1 month", date_labels = "%Y %b") +
+  scale_color_manual(values = colors) +
+  theme_minimal() +
+  theme(legend.position = "none",
+        axis.text.x = element_text(angle = 60,  hjust=1))
+```
+
+## ARCLK
+
+IST: ARCLK volume received its highest values in Google Trends in July and November 2018. When we examine the boxplot, even though there were no outliers in July and November 2018, stock prices were observed many times above the median. Outside this range, stock prices constantly increase and decrease and contain outliers, and at the same time, the IST: ARCLK volume in Google Trends constantly increases and decreases. In addition, ARCLK stock prices experienced a significant decline in July 2018 and search volume reached its highest value in the same month. The share value increased suddenly at the end of October and the beginning of November of the same year, and the search volume increased significantly compared to the previous month. Considering these, there is a strong possibility that the changes in ARCLK stock are related to the IST: ARCLK search volume. When looking at the correlation test, it is statistically significant that there is a negative correlation between these two data.
+
+```{r Correlation Test ARCLK}
+cor.test(x = weekly_stock_data$ARCLK, y = google_trends_data$`IST:ARCLK`)
+```
+
+## GARANB
+
+IST: GARAN, which had a very high search volume from July to November 2016, experienced a sudden decrease starting from November and the search volume decreased to 0. In November's boxplot, there are many outliers well above the average. Although there have been fluctuations in stock prices after this date, there is no visible change in search volume. Search volume increased slightly in August 2018 and there was a large decrease in stock price in the same month. Although there is a possibility of a correlation between these two data, it may not be very strong. When we look at the correlation test, we see that there is a negative correlation between these two data, statistically significant but not a very strong correlation.
+
+```{r Correlation Test GARANB}
+cor.test(x = weekly_stock_data$GARAN, y = google_trends_data$`IST:GARAN`)
+```
+
+## HALKB
+
+After November 2016, IST: HALKB's search volume dropped to almost 0 and then almost did not increase until August 2018. When we look at the boxplot, although outliers appear from time to time and there is a constant increase and decrease in stock prices, their reflection does not appear in the search volume. Therefore, the correlation between these two data does not seem very strong. When looking at the correlation test, although it was statistically significant and negative, the correlation was less than the correlation of other stocks except TCELL.
+
+```{r Correlation Test HALKB}
+cor.test(x = weekly_stock_data$HALKB, y = google_trends_data$`IST:HALKB`)
+```
+
+## TCELL
+
+When we look at TCELL stock values, it can be seen that there are sudden increases and decreases in share values from time to time. Although the large share value changes in January and October in 2017 and January and June in 2018 appear to be reflected in the IST: TCELL volume search in Google Trends, it is also possible to say that the constantly fluctuating stock prices and search volumes are always related to each other. not. Considering all these, it can be said that there is a correlation between the two data, but this correlation is not expected to be strong. Even though there is a statistically significant correlation when looking at the correlation test, it is not a strong correlation.
+
+```{r Correlation Test TCELL}
+cor.test(x = weekly_stock_data$TCELL, y = google_trends_data$`IST:TCELL`)
+```
+
+## TTKOM
+
+When we look at TTKOM shares, although there are small decreases and increases, there is not much change in stock prices until August and September 2018. In these months, TTKOM stock prices seem to have clearly decreased. When we look at the IST: TTKOM search volume in Google Trends data, we see an increase from 0 to 100 in September 2018. Therefore, it is quite possible that there is a correlation between these two data. When the correlation test was examined, it was determined that they were statistically significantly negatively correlated.
+
+```{r Correlation Test TTKOM}
+cor.test(x = weekly_stock_data$TTKOM, y = google_trends_data$`IST:TTKOM`)
+```
+
+## VESTL
+
+In Google Trends data, a visible increase in late October 2017 and early November stands out. When we look at the share values, there are many outliers that are well above the average. Since the data is much higher than the median and the average and the IST: VESTL volume peaked in this exact time period, there may be a correlation between these two data, but it is not as strong as in the case of ARCLK stock. Considering the correlation test, the correlation between the two data is statistically significant but not as much as ARCLK.
+
+```{r Correlation Test VESTL}
+cor.test(x = weekly_stock_data$VESTL, y = google_trends_data$`IST:VESTL`)
+```
+
+# Conclusion
+
+In this comprehensive financial data analysis, we delved into the intricate dynamics of the Turkish stock market, with a focus on six influential companies: ARCLK (Arçelik) and VESTL (Vestel) in the home appliances sector, GARAN (Garanti) and HALKB (Halkbank) representing the banking sector, and TTKOM (Türk Telekom) and TCELL (Turkcell) from the telecommunications sector. Our investigation encompassed stock behavior, correlations with Google Trends data, and the evaluation of real-world events to understand their impact on stock performance.
+
+We unearthed compelling insights through various analyses, highlighting the relationship between stock anomalies, sectoral influences, and external events. By examining correlations between stock movements and Google Trends data, we gained a glimpse into the connection between online search behavior and stock trends. Moreover, the detection of outliers through boxplots and 3-sigma limits shed light on the periodic anomalies within these stocks.
+
