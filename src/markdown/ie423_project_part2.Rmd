@@ -1,0 +1,349 @@
+---
+title: 'Project: Part 2'
+author:
+  - "Ali Can Milani 2018402171"
+  - "Aral Dörtoğul 2018402108"
+  - "Alp Emre Töken 2021402276"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    theme: flatly
+    highlight: tango
+    code_folding: hide
+    toc: true
+    toc_float: true
+    number_sections: true
+---
+
+```{r setup, include=FALSE}
+# Required libraries
+library(svglite)
+library(dplyr)
+library(lubridate)
+library(tidyr)
+library(ggplot2)
+library(GGally)
+library(ggcorrplot)
+library(rmarkdown)
+library(knitr)
+library(forecast)
+library(qcc)
+opts_chunk$set(echo = TRUE,
+               fig.align = "center",
+               fig.width = 10,
+               out.width = '100%')
+```
+
+#  Introduction
+
+In this study, two correlated stock pairs are analyzed in BIST30. First, the basic pairs trading strategy is examined using constant variance assumption. Next, advanced pairs trading strategy using time series analysis is observed in these stocks.
+
+<!-- Links -->
+
+-   Our markdown document can be found [here](https://bu-ie-423.github.io/fall-23-araldortogul/src/markdown/ie423_project_part2.Rmd) (.Rmd file).
+-   The data used in this study can be found [here](https://bu-ie-423.github.io/fall-23-araldortogul/src/data/part2_data.zip) (.zip file)
+
+# Highly Correlated Pairs
+
+First of all, we need to choose two stock pairs that are strongly correlating.
+
+```{r Read Data}
+pattern <- "\\d{8}_\\d{8}_bist30\\.csv"
+matching_files <- list.files(path = "Data", pattern = pattern)
+matching_files <- paste0("Data/", matching_files)
+# Create an empty list to store the data frames
+long_data <- data.frame("timestamp" =c(), "price" = c(), "short_name" = c())
+
+# Loop through each CSV file and read it into a data frame
+for (file in matching_files) {
+  data <- read.csv(file)
+  data$timestamp <- ymd_hms(data$timestamp)
+  data$short_name <- as.factor(data$short_name)
+  long_data <- rbind(long_data, data)
+}
+```
+
+The whole data given is the following:
+
+```{r Plot of Whole Data, cache=TRUE}
+long_data %>%
+  ggplot() +
+  geom_line(aes(x = timestamp, y = price, color = short_name))
+
+wide_data <- long_data %>%
+  pivot_wider(names_from = short_name, values_from = price)
+```
+
+
+The data given to us is too large to examine as a whole. For simplicity, we will use only the data from 2018 to 2020, where the data is less volatile when compared to the data obtained after 2022.
+
+We can plot the correlation matrix of the stocks.
+
+```{r Correlation Matrix, fig.width=14, fig.height=14}
+long_data %>%
+  filter(timestamp %within% interval(ymd("2018-01-01"), ymd("2020-01-01"))) %>%
+  group_by(Date = date(timestamp), short_name) %>%
+  summarize(Price = mean(price), .groups = "drop") %>%
+  pivot_wider(names_from = short_name, values_from = Price) %>%
+  select(!Date) %>%
+  cor(use = "complete.obs") %>%
+ggcorrplot(
+           hc.order = TRUE,
+           outline.col = "white",
+           type = "upper", lab = TRUE,
+           title = "Correlation Matrix of BIST30 Stocks Between 2018 and 2020",
+           colors = c("darkred","white","darkgreen"),
+           legend.title = "Correlation",
+           ggtheme = theme_void)
+```
+
+From the correlation matrix, we pick GARAN-AKBNK (0.97 correlation) and YKBNK-ISCTR (0.94 correlation) stock pairs for pairs trading study.
+
+# Task 1: Basic Pairs Trading Strategy Using Constant Variance As- sumption
+
+## GARAN-AKBNK
+
+Here is the plot of GARAN and AKBNK from 2018 to 2020:
+
+```{r}
+garan_akbnk_data <- wide_data %>%
+  select(c(timestamp, GARAN, AKBNK)) %>%
+  filter(timestamp %within% interval("2018-01-01", "2020-01-01"))
+
+garan_akbnk_data %>%
+  pivot_longer(cols = c("GARAN", "AKBNK"), names_to = "Stock", values_to = "Price") %>%
+  ggplot() +
+  geom_line(aes(x = timestamp, y = Price, color = Stock)) +
+  labs(title = "GARAN and AKBNK Stocks from 2018 to 2020")
+```
+
+AKBNK and GARAN show a similar trend over time. To model their relationship, a linear regression model between GARAN and AKBNK is built.
+
+```{r GARAN-AKBNK LM}
+model1 <- lm(formula = GARAN ~ AKBNK, data = garan_akbnk_data)
+
+summary(model1)
+```
+
+According to the statistics, the linear regression of GARAN with respect to AKBNK is statistically significant.
+
+The residuals of the model are:
+
+```{r}
+data.frame(index = 1:length(model1$residuals), residuals = model1$residuals) %>%
+  ggplot() +
+  geom_point(aes(x = index, y = residuals)) +
+  labs(title= "Residuals of the linear regression model of GARAN and AKBNK")
+```
+
+We can plot an X-bar control chart to the residuals to spot the outliers. Here is the X-bar chart:
+
+```{r X-bar Chart 1}
+qcc1 <- qcc(data = model1$residuals, type = "xbar.one", std.dev = "SD", nsigmas = 2)
+```
+
+The standard deviation of the residuals is `r qcc1$std.dev`. The lower and upper 2 sigma limits are: `r qcc1$limits`, respectively. The red points indicate the residuals that are outside the limits. According to the pairs trading strategy, the stocks should be traded when the points lie beyond limits. When the point is below LCL GARAN is sold and AKBNK is bought, and when it is above UCL, the opposite is performed. So, with this strategy, the profit becomes:
+
+```{r}
+garan_akbnk_data$SELL_GARAN_BUY_AKBNK <- model1$residuals < qcc1$limits[,"LCL"]
+garan_akbnk_data$SELL_AKBNK_BUY_GARAN <- model1$residuals > qcc1$limits[,"UCL"]
+
+income <-sum(garan_akbnk_data %>%
+               filter(SELL_GARAN_BUY_AKBNK) %>%
+               select(GARAN)) +
+  sum(garan_akbnk_data %>%
+        filter(SELL_AKBNK_BUY_GARAN) %>% select(AKBNK))
+
+loss <-sum(garan_akbnk_data %>%
+               filter(SELL_GARAN_BUY_AKBNK) %>%
+                 select(AKBNK)) +
+  sum(garan_akbnk_data %>%
+        filter(SELL_AKBNK_BUY_GARAN) %>% 
+        select(GARAN))
+
+income-loss
+```
+
+
+## YKBNK-ISCTR
+
+Now, we examine YKBNK and ISCTR. Here is the plot of the stocks from 2018 to 2020.
+
+```{r YKBNK-ISCTR LM}
+ykbnk_isctr_data <- wide_data %>%
+  select(c(timestamp, YKBNK, ISCTR)) %>%
+  filter(timestamp %within% interval("2018-01-01", "2020-01-01"))
+
+ykbnk_isctr_data %>%
+  pivot_longer(cols = c("YKBNK", "ISCTR"), names_to = "Stock", values_to = "Price") %>%
+  ggplot() +
+  geom_line(aes(x = timestamp, y = Price, color = Stock)) +
+  labs(title = "YKBNK and ISCTR Stocks from 2018 to 2020")
+```
+Next, we build a linear regression model to predict ISCTR stocks with YKBNK:
+```{r ISCTR-YKBNK LM}
+model2 <- lm(formula = ISCTR ~ YKBNK, data = ykbnk_isctr_data)
+
+summary(model2)
+```
+The linear regression model is statistically significant.
+
+Like the GARAN-AKBNK case, we can check the residuals for the pairs trading strategy. Here is the plot of the residuals:
+
+```{r}
+data.frame(index = 1:length(model2$residuals), residuals = model2$residuals) %>%
+  ggplot() +
+  geom_point(aes(x = index, y = residuals)) + 
+  labs(title= "Residuals of the linear regression model of YKBNK and ISCTR")
+```
+
+When we plot these residuals on an X-bar chart, we have the following:
+
+
+```{r X-bar Chart 2}
+qcc2 <- qcc(data = model2$residuals, type = "xbar.one", std.dev = "SD", nsigmas = 2)
+```
+The standard deviation of the residuals is `r qcc2$std.dev`. The lower and upper 2 sigma limits are: `r qcc2$limits`, respectively. The red points indicate the residuals that are outside the limits. According to the pairs trading strategy, we should sell ISCTR - buy YKBNK when the residuals are below LCL, and buy ISCTR - sell YKBNK when the residuals are above UCL.
+
+Here is the profit associated with this strategy:
+
+```{r}
+ykbnk_isctr_data$SELL_ISCTR_BUY_YKBNK <- model2$residuals < qcc2$limits[,"LCL"]
+ykbnk_isctr_data$SELL_YKBNK_BUY_ISCTR <- model2$residuals > qcc2$limits[,"UCL"]
+
+income <-sum(ykbnk_isctr_data %>%
+               filter(SELL_ISCTR_BUY_YKBNK) %>%
+               select(ISCTR)) +
+  sum(ykbnk_isctr_data %>%
+        filter(SELL_YKBNK_BUY_ISCTR) %>% select(YKBNK))
+
+loss <-sum(ykbnk_isctr_data %>%
+               filter(SELL_ISCTR_BUY_YKBNK) %>%
+                 select(YKBNK)) +
+  sum(ykbnk_isctr_data %>%
+        filter(SELL_YKBNK_BUY_ISCTR) %>% 
+        select(ISCTR))
+
+income-loss
+```
+
+This time, the pairs trading strategy did not give us a positive profit. This is possible, because the market dynamics cannot be modeled perfectly.
+
+To sum up, this strategy uses linear regression modeling and identify highly correlated stock pairs. Then control limits are determined for trading with the assumption of constant variance. In short-term, this strategy may be efficient and bring profit. To do that, control chart send signals for initiate tradings. On the other hand, this assumption may not hold in all conditions and may result wrong or inexact control limits. Because of this strategy depends on that past correlations continue in the future, it may not be like that in the future.
+
+# Task 2
+
+## GARAN - AKBNK
+In this part, advanced time series analysis is conducted to model the residuals. First, we check the autocorrelation of the residuals for GARAN and AKBNK:
+
+```{r}
+checkresiduals(model1)
+```
+The residual are highly autocorrelated, which is not desired in the linear regression model.
+
+We can improve the model by adding lagged values. We introduce GARAN's lag 1 value to the model:
+
+```{r}
+garan_akbnk_data$GARAN_LAG1 <- lag(garan_akbnk_data$GARAN)
+garan_akbnk_data
+
+model3 <- lm(formula = GARAN ~ GARAN_LAG1 + AKBNK, data = garan_akbnk_data)
+summary(model3)
+```
+
+The model is statistically significant. We can check the residuals:
+
+```{r GARAN AKBNK Check Residuals}
+checkresiduals(model3)
+```
+The introduction of the lagged value decreased the autocorrelation of the residuals. We can continue with this model.
+
+Next, we plot the X-bar chart of the new model. This time, we use 3 sigmas as the limit, because 2 sigma limits cause too many false alarms.
+
+```{r X-bar Chart 3}
+qcc3 <- qcc(data = model3$residuals, type = "xbar.one", std.dev = "SD", nsigmas = 3)
+```
+
+We follow the same procedure to calculate the profit associated with the pairs trade. The profit is:
+
+```{r}
+garan_akbnk_data$SELL_GARAN_BUY_AKBNK <- c(FALSE, model3$residuals < qcc3$limits[,"LCL"])
+garan_akbnk_data$SELL_AKBNK_BUY_GARAN <- c(FALSE, model3$residuals > qcc3$limits[,"UCL"])
+
+income <-sum(garan_akbnk_data %>%
+               filter(SELL_GARAN_BUY_AKBNK) %>%
+               select(GARAN)) +
+  sum(garan_akbnk_data %>%
+        filter(SELL_AKBNK_BUY_GARAN) %>% select(AKBNK))
+
+loss <-sum(garan_akbnk_data %>%
+               filter(SELL_GARAN_BUY_AKBNK) %>%
+                 select(AKBNK)) +
+  sum(garan_akbnk_data %>%
+        filter(SELL_AKBNK_BUY_GARAN) %>% 
+        select(GARAN))
+
+income-loss
+```
+
+With the pairs trade, we obtain a positive profit.
+
+## YKBNK - ISCTR
+
+First of all, we check the autocorrelation of YKBNK and ISCTR in the model used in Task 1:
+
+```{r}
+checkresiduals(model2)
+```
+
+The residuals are highly autocorrelated.
+
+We can improve the model by adding lag 1 of ISCTR:
+
+```{r}
+ykbnk_isctr_data$ISCTR_LAG1 <- lag(ykbnk_isctr_data$ISCTR)
+ykbnk_isctr_data
+
+model5 <- lm(formula = ISCTR ~ YKBNK + ISCTR_LAG1, data = ykbnk_isctr_data)
+summary(model5)
+```
+
+The model is statistically significant and has a better adjusted R-squared value than the previous model. We continue by checking the residuals:
+
+```{r ISCTR YKBNK Check Residuals}
+checkresiduals(model5)
+```
+
+The autocorrelation problem in the first model decreased significantly. We can use this model for detecting the pairs trade dates.
+
+```{r X-bar Chart 4}
+qcc4 <- qcc(data = model5$residuals, type = "xbar.one", std.dev = "SD", nsigmas = 3)
+```
+We perform the same steps and calculate the profit:
+
+```{r}
+ykbnk_isctr_data$SELL_ISCTR_BUY_YKBNK <- c(FALSE, model5$residuals < qcc4$limits[,"LCL"])
+ykbnk_isctr_data$SELL_YKBNK_BUY_ISCTR <- c(FALSE, model5$residuals > qcc4$limits[,"UCL"])
+
+income <-sum(ykbnk_isctr_data %>%
+               filter(SELL_ISCTR_BUY_YKBNK) %>%
+               select(ISCTR)) +
+  sum(ykbnk_isctr_data %>%
+        filter(SELL_YKBNK_BUY_ISCTR) %>% select(YKBNK))
+
+loss <-sum(ykbnk_isctr_data %>%
+               filter(SELL_ISCTR_BUY_YKBNK) %>%
+                 select(YKBNK)) +
+  sum(ykbnk_isctr_data %>%
+        filter(SELL_YKBNK_BUY_ISCTR) %>% 
+        select(ISCTR))
+
+income-loss
+```
+
+This model also gave a negative profit, but the overall loss is less than the loss calculated in Task 1.
+
+Advanced Pairs Trading Strategy using Time Series Analysis is a more dynamic strategy using revised control limits with residuals. It reacts changes in market and evolved relations of stock pairs. Also usage of time series results less risky signals for trading. However, in this strategy, if there is not much data, overfitting may occur. In our model, we have used more data to escape this situation.
+
+# COMPARISON
+There are different benefits of using both of these strategies. We should choose proper strategy depending on conditions. In short-term, first strategy might be more profitable however in the long-term, due to lots of changes in market conditions, using second strategy would be more logical. In conclusion, the second method with time series analysis offers the possibility for improved accuracy and adaptability while the first strategy offers a simple approach. Both tactics, however, have disadvantages and must be carefully considered in light of a number of considerations in order to be used successfully.

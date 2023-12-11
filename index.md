@@ -5,3 +5,7 @@ This diary contains assignments from the [IE 423: Quality Engineering](https://i
 ## Part 1 (November 2, 2023)
 
 Our report can be found [here](src/reports/ie423_project_part1.html).
+
+## Part 2 (December 11, 2023)
+
+Our report can be found [here](src/reports/ie423_project_part2.html).
