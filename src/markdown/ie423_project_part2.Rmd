@@ -68,7 +68,8 @@ The whole data given is the following:
 ```{r Plot of Whole Data, cache=TRUE}
 long_data %>%
   ggplot() +
-  geom_line(aes(x = timestamp, y = price, color = short_name))
+  geom_line(aes(x = timestamp, y = price, color = short_name)) +
+  labs(title = "The Given Stock Data")
 
 wide_data <- long_data %>%
   pivot_wider(names_from = short_name, values_from = price)
