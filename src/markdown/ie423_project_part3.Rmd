@@ -1,0 +1,739 @@
+---
+title: 'IE 423: Project Part 3'
+author:
+  - "Ali Can Milani 2018402171"
+  - "Aral Dörtoğul 2018402108"
+  - "Alp Emre Töken 2021402276"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    theme: flatly
+    highlight: tango
+    code_folding: hide
+    toc: true
+    toc_float: true
+    number_sections: true
+    
+# References 
+references:
+- id: defect-glossary
+  title: "Standard fabric defect glossary"
+  publisher: "Cotton Incorporated"
+  URL: 'https://www.cottoninc.com/quality-products/textile-resources/fabric-defect-glossary/'
+  type: article
+  issued:
+    year: 2023
+  accessed:
+    year: 2024
+    month: 1
+    day: 13
+---
+
+```{r setup, include=FALSE}
+library(jpeg)
+library(imager)
+library(dplyr)
+library(ggplot2)
+library(MASS)
+library(truncnorm)
+library(cascsim)
+library(qcc)
+knitr::opts_chunk$set(
+  echo = TRUE,
+  fig.align='center')
+  #fig.width=10,
+  #out.width='100%')
+```
+
+# Introduction
+
+<!--What is linen? Why is it important to monitor processing of linens? What are the motivations regarding the use of images and identification of defects in linen manufacturing -->
+
+Made from the strands of the flax plant, linen is a textile prized for its inherent brilliance, breathability, and absorbency. Because of its extreme durability and comfort, it is a well-liked option for summer apparel, bedding, and other home goods. Linen's crisp texture and capacity to soften with each wash add to its timeless charm, even though it tends to wrinkle. Defects that may occur during production can greatly deteriorate the quality of the product because the line has a tight structure and even minor defects can actually make the product completely defective. Therefore, it must undergo strict control. Monitor processing is also used for control because defects actually cause changes in appearance, so by using the linen image, any differences on the image can be detected thanks to monitor processing.
+
+# Background information
+
+What has been done in the literature regarding the process monitoring
+on linen?
+
+As we were asked to do in this project, in the research conducted, first of all, image processing plays a very important role in linen defect detection. Converting the sample taken to gray scale and then detecting defects after creating the luminance matrix is the basis of most research. There are different methods after obtaining the gray scale. The simplest of these is to check whether the pixels in the gray scale matrix exceed the threshold value. If a pixel is outside the limit luminance values, it is quite possible that there is a defect there. However, since this method is a very simple method, there is a high probability of missing different defects on the image. That's why various advanced methods are also used.
+
+Most of these advanced methods are based on classification/clustering methods and deep learning. However, in this project, we will try to detect these defects with monitoring processes and control charts.  
+
+# Approach
+
+The image assigned to our group is "0030.jpg". The original image is seen below: 
+
+```{r Load Image, fig.width=5}
+# Load image from file
+colorImage <- load.image("0030.jpg")
+
+# Display the image
+colorImage %>% plot(main = "Original Image")
+```
+
+After some online search, it is found that this image is taken from [@defect-glossary] and the defect in the image is classified as **"Tight End"**. This nonconformity occurs when a warp end is woven more tightly than its neighboring warp ends. Therefore, the increased tension causes the filling in that section to elevate to the surface. It is considered to be a severe defect in the field of fabric manufacturing.
+
+In the image, the defective part is the vertical line in the center that is slightly lighter than its the surrounding area.
+
+Here is the information about the image:
+
+```{r Print Color Image Info}
+# Print image info
+colorImage
+```
+
+Before analyzing this 512x512 image, we need to convert it to grayscale. The grayscale version of the image is displayed below:
+
+```{r Convert Image to Grayscale, fig.width=5}
+# Convert the RGB image to grayscale
+grayImage <- grayscale(colorImage)
+# Display the image
+grayImage %>% plot(main = "Grayscale Image")
+# Print image info
+print(grayImage)
+```
+
+## Statistical Data Analysis Perspective
+
+The data analysis perspective's main aproach is to fit a distribution to the luminance values of the photo and detect the pixels that are outside 0.001 and 0.999 probability limits
+
+First of all, we need the histogram of the grayscale linen photo.
+
+```{r Histogram of Luminance Values, fig.width=10}
+# Computes the histogram of the luminance values
+grayImage %>%
+  hist(main="Luminance values in linen photo", breaks = 50, freq = FALSE)
+```
+
+The linen valeus are stacked around `r round(mean(grayImage),1)`, and the distribution is positively skewed (the tail of the distribution is longer to the right side). An interesting point is that the luminance values are also dense near 0.0 (black) and 1.0 (white). Moreover, since we know that the luminance values cannot take values outside the 0-1 range, the distribution that we are going to fit can be truncated to these values.
+
+In the following sections, we fit different distributions and choose the best one:
+
+### Fitting a Truncated Normal Distribution
+
+The normal distribution, also known as the Gaussian distribution or bell curve, is a symmetric probability distribution that is characterized by its distinctive bell-shaped curve. The tails of the distribution extend infinitely in both directions. While the curve approaches but never reaches the x-axis, the tails asymptotically diminish. Because of this, the dense luminance values around 0.0 and 1.0 is omitted and the truncated normal distribution is fitted using only the data between 1 and 99th quantiles.
+
+Here is the fitted truncated normal distribution:
+
+```{r Fit Truncated Normal Dist, fig.width=10, cache=TRUE}
+# Fit a truncated normal distribution to the data
+df.g <- as.data.frame(grayImage)
+quantiles <- quantile(grayImage, c(0.01, 0.99))
+
+df.g_values_without_quantiles <- df.g$value[df.g$value > quantiles["1%"] &
+                                              df.g$value < quantiles["99%"]]
+
+fit <- fitdistr(df.g_values_without_quantiles, dtruncnorm,
+                start=list(mean = 0.4, sd = 0.2), a = 0, b = 1)
+fit
+
+# Plot the fitted distribution over the histogram
+grayImage %>%
+  hist(main="Luminance Values with Maximum-likelihood Fitting of Truncated Normal Distribution",
+       sub = paste("Parameters of the Truncated Normal Distribution\nMean =", 
+                   round(fit$estimate["mean"], digits =4),
+                   ", St. Dev =", round(fit$estimate["sd"], digits = 4),
+                   "Min =", 0, "Max =", 1),
+       breaks = 50, freq = F, xlim = c(-0.1, 1.1), axes = FALSE)
+  axis(1, at = seq(-0.1, 1.1, by = 0.1), labels = seq(-0.1, 1.1, by = 0.1))
+  axis(2, at = seq(0, 2, by = 0.2), labels = seq(0, 2, by = 0.2))
+curve(dtruncnorm(x, mean = fit$estimate["mean"],
+                 sd = fit$estimate["sd"], a = 0, b = 1),
+      n = 2000, col = "blue", lwd = 2, add = TRUE)
+```
+
+### Fitting a Truncated Gamma Distribution
+
+The shape of the Gamma distribution depends on two parameters: k (shape parameter) and θ (scale parameter). The Gamma distribution is typically right-skewed, meaning that the tail on the right side is longer than the left side. This is especially pronounced when the shape parameter is small.
+
+Here is the fitted truncated gamma distribution:
+
+```{r Fit Truncated Gamma Dist, fig.width=10, cache=TRUE}
+# Fit a truncated gamma distribution to the data
+tgamma_min <- 0.28
+tgamma_max <- tgamma_min + 1
+
+fit2 <- fitdistr(x = df.g_values_without_quantiles, densfun = dtgamma,
+                 start = list(shape = 11, scale= 16),
+                 min = tgamma_min, max = tgamma_max, lower = 0.001)
+fit2
+
+# Plot the fitted distribution over the histogram
+grayImage %>%
+  hist(main="Luminance values with Maximum-likelihood Fitting of Truncated Gamma Distribution",
+       sub = paste("Parameters of the Truncated Gamma Distribution\nShape =", 
+                   round(fit2$estimate["shape"], digits = 4),
+                   ", Scale =", round(fit2$estimate["scale"], digits = 4),
+                   ", Min =", tgamma_min, ", Max =", tgamma_max),
+       breaks = 50, freq = F, xlim = c(-0.1, 1.1), axes = FALSE)
+  axis(1, at = seq(-0.1, 1.1, by = 0.1), labels = seq(-0.1, 1.1, by = 0.1))
+  axis(2, at = seq(0, 2, by = 0.2), labels = seq(0, 2, by = 0.2))
+curve(dtgamma(x,
+              shape = fit2$estimate["shape"],
+              scale = fit2$estimate["scale"],
+              min = tgamma_min,
+              max = tgamma_max),
+      n = 2000,
+      col = "red",
+      lwd = 2,
+      add = TRUE)
+```
+
+The truncated gamma distribution looks like a better fit when compared to the truncated normal distribution. Therefore, we proceed with this distribution for the next steps of the statistical data analysis procedure.
+
+### Identification of the Outliers
+
+In this step, we find the outlier pixels using the gamma distribution. Outliers are the pixel values that are either below 0.001 or above 0.999 probability limits:
+
+```{r Statistical Analysis Outliers, fig.width=10, cache=TRUE}
+p_limits <- ptgamma(c(0.001,0.999), shape = fit2$estimate["shape"], fit2$estimate["scale"], min = tgamma_min, max = tgamma_max)
+
+grayImage2 <- grayImage
+
+
+par(mfrow = c(1, 2))
+plot(grayImage2 >= p_limits[1] & grayImage2 <= p_limits[2],
+     main = "Outlier Pixels of the Image")
+# Plots original image with outliers as black pixels
+colorise(colorImage, grayImage2 < p_limits[1] | grayImage2 > p_limits[2], 
+         "black", alpha=1) %>%
+  plot(main = "Original Image When Outliers are Black")
+```
+
+The statistical analysis method could not identify the "tight end" defect in the image. According to the analysis, the right side of the image has defective pixels scattered almost uniformly. 
+
+
+### Statistical Analysis of the Patches of the Image
+
+In this step, we set a window size of 51x51 and apply the previous steps for the 51x51 patches of the image. This allows us to analyze the data more locally.
+
+```{r Statistical Analysis on Windows, fig.height=3, fig.width=10, cache=TRUE}
+# Extract a 51x51 window from the image
+window_size <- 51
+center_x <- 256  # Center of the image
+center_y <- 256  # Center of the image
+
+# Define the coordinates for the window
+
+get_xy_end <- function(start) {
+  return(start + window_size - 1)
+}
+
+grayImage3 <- as.data.frame(grayImage)
+
+for (x in seq(from = 1, to = 512 - window_size, by = window_size * 2)) {
+  for (y in seq(from = 1, to = 512 - window_size, by = window_size)) {
+    
+    # Start coordinates
+    x_start <- x
+    y_start <- y
+    
+    # 51x51 window
+    window.df <-
+      grayImage[x_start:get_xy_end(x_start), y_start:get_xy_end(y_start)]
+    window <- as.cimg(window.df)
+    
+    # Fit truncated gamma distribution to window
+    window_fit <-
+      fitdistr(
+        x = as.data.frame(window)$value,
+        densfun = dtgamma,
+        start = list(shape = 11, scale = 16),
+        min = tgamma_min,
+        max = tgamma_max,
+        lower = 0.001
+      )
+    
+    # Print truncated gamma's parameters
+    #print(window_fit)
+    
+    # Find upper and lower limits
+    lower_limit <-
+      ptgamma(
+        0.001,
+        shape = fit2$estimate["shape"],
+        fit2$estimate["scale"],
+        min = tgamma_min,
+        max = tgamma_max
+      )
+    upper_limit <-
+      ptgamma(
+        0.999,
+        shape = fit2$estimate["shape"],
+        fit2$estimate["scale"],
+        min = tgamma_min,
+        max = tgamma_max
+      )
+    
+    grayImage3$value[grayImage3$x >= x_start & grayImage3$x <= get_xy_end(x_start) & grayImage3$y >= y_start & grayImage3$y <= get_xy_end(y_start) & (grayImage3$value < lower_limit | grayImage3$value > upper_limit)] <- 0
+    grayImage3$value[grayImage3$x >= x_start & grayImage3$x <= get_xy_end(x_start) & grayImage3$y >= y_start & grayImage3$y <= get_xy_end(y_start) & (grayImage3$value >= lower_limit & grayImage3$value <= upper_limit)] <- 1
+    
+
+    
+    
+    # par(mfrow = c(1, 4))
+    # window %>% plot(
+    #   main = paste0(
+    #     "Window (",
+    #     x_start,
+    #     ",",
+    #     y_start,
+    #     ") -- (",
+    #     get_xy_end(x_start),
+    #     ",",
+    #     get_xy_end(y_start),
+    #     ")"
+    #   )
+    # )
+    # 
+    # window %>% hist(
+    #   breaks = 30,
+    #   freq = FALSE,
+    #   main = paste0(
+    #     "Hist. of (",
+    #     x_start,
+    #     ",",
+    #     y_start,
+    #     ") -- (",
+    #     get_xy_end(x_start),
+    #     ",",
+    #     get_xy_end(y_start),
+    #     ")"
+    #   )
+    # )
+    # curve(
+    #   dtgamma(
+    #     x,
+    #     shape = window_fit$estimate["shape"],
+    #     scale = window_fit$estimate["scale"],
+    #     min = tgamma_min,
+    #     max = tgamma_max
+    #   ),
+    #   n = 2000,
+    #   col = "red",
+    #   lwd = 2,
+    #   add = TRUE
+    # )
+    
+    x_start <- x + window_size
+    window <-
+      as.cimg(grayImage[x_start:get_xy_end(x_start), y_start:get_xy_end(y_start)])
+    
+    
+        # Fit truncated gamma distribution to window
+    window.df <- as.data.frame(window)
+    window_fit <-
+      fitdistr(
+        x = window.df$value,
+        densfun = dtgamma,
+        start = list(shape = 11, scale = 16),
+        min = tgamma_min,
+        max = tgamma_max,
+        lower = 0.001
+      )
+    
+    # Print truncated gamma's parameters
+    # print(window_fit)
+    
+    # Find upper and lower limits
+    lower_limit <-
+      ptgamma(
+        0.001,
+        shape = fit2$estimate["shape"],
+        fit2$estimate["scale"],
+        min = tgamma_min,
+        max = tgamma_max
+      )
+    upper_limit <-
+      ptgamma(
+        0.999,
+        shape = fit2$estimate["shape"],
+        fit2$estimate["scale"],
+        min = tgamma_min,
+        max = tgamma_max
+      )
+    
+    grayImage3$value[grayImage3$x >= x_start & grayImage3$x <= get_xy_end(x_start) & grayImage3$y >= y_start & grayImage3$y <= get_xy_end(y_start) & (grayImage3$value < lower_limit | grayImage3$value > upper_limit)] <- 0
+    grayImage3$value[grayImage3$x >= x_start & grayImage3$x <= get_xy_end(x_start) & grayImage3$y >= y_start & grayImage3$y <= get_xy_end(y_start) & (grayImage3$value >= lower_limit & grayImage3$value <= upper_limit)] <- 1
+    
+    # window %>% plot(
+    #   main = paste0(
+    #     "Window (",
+    #     x_start,
+    #     ",",
+    #     y_start,
+    #     ") -- (",
+    #     get_xy_end(x_start),
+    #     ",",
+    #     get_xy_end(y_start),
+    #     ")"
+    #   )
+    # )
+    # 
+    # window %>% hist(
+    #   breaks = 30,
+    #   freq = FALSE,
+    #   main = paste0(
+    #     "Hist. of (",
+    #     x_start,
+    #     ",",
+    #     y_start,
+    #     ") -- (",
+    #     get_xy_end(x_start),
+    #     ",",
+    #     get_xy_end(y_start),
+    #     ")"
+    #   )
+    # )
+    # curve(
+    #   dtgamma(
+    #     x,
+    #     shape = window_fit$estimate["shape"],
+    #     scale = window_fit$estimate["scale"],
+    #     min = tgamma_min,
+    #     max = tgamma_max
+    #   ),
+    #   n = 2000,
+    #   col = "red",
+    #   lwd = 2,
+    #   add = TRUE
+    # )
+  }
+}
+```
+
+```{r Plot Window Data, fig.width=5}
+plot(as.cimg(grayImage3, dim=dim(grayImage)),
+     main= "Outlier Pixels Obtained from 51x51 Windows")
+```
+
+Analyzing the data locally in 51x51 windows did not change the result of the previous analysis that much. This method failed to detect the tight end of the fabric.
+
+## Control Chart Perspective
+
+
+```{r Control Chart Perspective 1, cache=TRUE}
+grayImage_RowChart <- grayImage
+
+for (row_i in 1:512) {
+  image_row <- imrow(grayImage,row_i)
+  chart <- qcc(image_row,type = "xbar.one")
+  
+  lower_limit <- chart$limits[1]
+  upper_limit <- chart$limits[2]
+
+  #plot(image_row)
+  image_row[image_row < lower_limit | image_row > upper_limit] <- 0
+  image_row[image_row >= lower_limit & image_row <= upper_limit] <- 1
+
+  #plot(image_row)
+  for (i in 1:512) {
+    grayImage_RowChart[i, row_i] <- image_row[i]
+  }
+}
+plot(grayImage_RowChart)
+```
+
+```{r Control Chart Perspective 2, cache=TRUE}
+
+grayImage_ColChart <- grayImage
+
+for (col_i in 1:512) {
+  image_col <- imcol(grayImage, col_i)
+  chart <- qcc(image_col,type = "xbar.one")
+  
+  lower_limit <- chart$limits[1]
+  upper_limit <- chart$limits[2]
+  
+  #plot(image_col)
+  image_col[image_col < lower_limit | image_col > upper_limit] <- 0
+  image_col[image_col >= lower_limit & image_col <= upper_limit] <- 1
+
+  #plot(image_col)
+  for (i in 1:512) {
+    grayImage_ColChart[col_i, i] <- image_col[i]
+  }
+}
+plot(grayImage_ColChart)
+```
+
+In this section, we examined each pixel separately and created a control chart based on the luminance average of the columns and rows in which they are located. A separate control chart was created for each row and each column, and the luminance of the pixels exceeding the limits of the control chart created according to these rows and columns was updated to 0. When we look at the final version of the image, from the perspective of the control chart, we see that there are many alarms, especially on the right side of this line, and these areas may be defective. However, in this perspective, it is very likely that there will be many false alarms or misses because each pixel is evaluated only within its own row and column, and whether there is a correlation with other pixels close to it is not taken into account. Therefore, we can say that this method is not very efficient.
+
+## Our proposal
+
+```{r Your Proposal 1}
+grayImage_Prop <- grayImage
+
+for (row_i in 6:507) {
+  print(row_i)
+  for (col_i in 6:507) {
+
+    arr <- numeric(0)
+    for (i in 1:11) {
+      for (j in 1:11) {
+        if(i == 6 & j == 6){
+          next
+        }
+        arr <- c(arr, grayImage[col_i-6+j, row_i-6+i])
+      }
+    }
+    mean_arr <- mean(arr)
+    var_arr <- var(arr)
+    
+    lower_limit <- mean_arr - 3*sqrt(var_arr/120)
+    upper_limit <- mean_arr + 3*sqrt(var_arr/120)
+    
+    if(grayImage[col_i, row_i] < lower_limit | grayImage[col_i, row_i] > upper_limit){
+      grayImage_Prop[col_i, row_i] <- 0
+    }else{
+      grayImage_Prop[col_i, row_i] <- 1
+    }
+    
+  }
+}
+
+plot(grayImage_Prop)
+```
+
+In this method, when creating the control chart, rather than considering the average and variance of the entire row or the entire column, it would be more logical to consider the 120 pixels around a pixel and detect defects by determining whether the pixel in the center exceeds the control chart limits created by the average and variance of these 120 pixels. Because we think that it would not make sense to consider the value of a pixel at the other end of the linen when determining whether a pixel at the far left of the linen is defective or not, so we followed such a method.
+
+# Overall Comparison of Our Proposal
+
+<!--
+Please evaluate “your proposal” on alternative images. For the selection of alternative images, generate 100 random integers between 2 and 196 (both included), take the first 5 available images based on the generated sequence. We have 146 images in total (not 196-2+1= 195 images), so select the first 5 available images for comparison.
+-->
+
+```{r Get 5 Random Images}
+# Set the seed for reproducibility
+set.seed(123)
+
+# Set the directory where your files are located
+dir_path <- getwd()
+
+# Generate a random sample of 5 file numbers from 2 to 196
+random_numbers <- sample(2:196, 100)
+
+# Initialize a counter for found files and a vector to store filenames
+count <- 0
+found_files <- c()
+
+# Loop through the randomly selected file numbers
+for (i in random_numbers) {
+  # Create the file name with leading zeros
+  filename <- sprintf("%04d.jpg", i)
+  
+  # Check if the file exists in the directory
+  if (file.exists(file.path(dir_path, filename))) {
+    count <- count + 1
+    
+    # Add the filename to the vector
+    found_files <- c(found_files, filename)
+    
+    # Break the loop if 5 files are found
+    if (count == 5) {
+      break
+    }
+  }
+}
+
+# Print the vector of found files
+cat("Found files:", found_files, "\n")
+```
+
+```{r Display Random Images, fig.width=15, out.width='100%'}
+# Load image from file
+colorImage_1 <- load.image(found_files[1])
+colorImage_2 <- load.image(found_files[2])
+colorImage_3 <- load.image(found_files[3])
+colorImage_4 <- load.image(found_files[4])
+colorImage_5 <- load.image(found_files[5])
+
+# Display the image
+par(mfrow = c(1, 5))
+colorImage_1 %>% plot(main = found_files[1])
+colorImage_2 %>% plot(main = found_files[2])
+colorImage_3 %>% plot(main = found_files[3])
+colorImage_4 %>% plot(main = found_files[4])
+colorImage_5 %>% plot(main = found_files[5])
+
+```
+```{r Your Proposal with Random Images}
+grayImage_1 <- grayscale(colorImage_1)
+grayImage_Prop_1 <- grayImage_1
+
+for (row_i in 6:507) {
+  for (col_i in 6:507) {
+
+    arr <- numeric(0)
+    for (i in 1:11) {
+      for (j in 1:11) {
+        if(i == 6 & j == 6){
+          next
+        }
+        arr <- c(arr, grayImage_1[col_i-6+j, row_i-6+i])
+      }
+    }
+    mean_arr <- mean(arr)
+    var_arr <- var(arr)
+    
+    lower_limit <- mean_arr - 3*sqrt(var_arr/120)
+    upper_limit <- mean_arr + 3*sqrt(var_arr/120)
+    
+    if(grayImage_1[col_i, row_i] < lower_limit | grayImage_1[col_i, row_i] > upper_limit){
+      grayImage_Prop_1[col_i, row_i] <- 0
+    }else{
+      grayImage_Prop_1[col_i, row_i] <- 1
+    }
+    
+  }
+}
+
+plot(grayImage_Prop_1)
+
+
+grayImage_2 <- grayscale(colorImage_2)
+grayImage_Prop_2 <- grayImage_2
+
+for (row_i in 6:507) {
+  for (col_i in 6:507) {
+
+    arr <- numeric(0)
+    for (i in 1:11) {
+      for (j in 1:11) {
+        if(i == 6 & j == 6){
+          next
+        }
+        arr <- c(arr, grayImage_2[col_i-6+j, row_i-6+i])
+      }
+    }
+    mean_arr <- mean(arr)
+    var_arr <- var(arr)
+    
+    lower_limit <- mean_arr - 3*sqrt(var_arr/120)
+    upper_limit <- mean_arr + 3*sqrt(var_arr/120)
+    
+    if(grayImage_2[col_i, row_i] < lower_limit | grayImage_2[col_i, row_i] > upper_limit){
+      grayImage_Prop_2[col_i, row_i] <- 0
+    }else{
+      grayImage_Prop_2[col_i, row_i] <- 1
+    }
+    
+  }
+}
+
+plot(grayImage_Prop_2)
+
+
+grayImage_3 <- grayscale(colorImage_3)
+grayImage_Prop_3 <- grayImage_3
+
+for (row_i in 6:507) {
+  for (col_i in 6:507) {
+
+    arr <- numeric(0)
+    for (i in 1:11) {
+      for (j in 1:11) {
+        if(i == 6 & j == 6){
+          next
+        }
+        arr <- c(arr, grayImage_3[col_i-6+j, row_i-6+i])
+      }
+    }
+    mean_arr <- mean(arr)
+    var_arr <- var(arr)
+    
+    lower_limit <- mean_arr - 3*sqrt(var_arr/120)
+    upper_limit <- mean_arr + 3*sqrt(var_arr/120)
+    
+    if(grayImage_3[col_i, row_i] < lower_limit | grayImage_3[col_i, row_i] > upper_limit){
+      grayImage_Prop_3[col_i, row_i] <- 0
+    }else{
+      grayImage_Prop_3[col_i, row_i] <- 1
+    }
+    
+  }
+}
+
+plot(grayImage_Prop_3)
+
+
+grayImage_4 <- grayscale(colorImage_4)
+grayImage_Prop_4 <- grayImage_4
+
+for (row_i in 6:507) {
+  for (col_i in 6:507) {
+
+    arr <- numeric(0)
+    for (i in 1:11) {
+      for (j in 1:11) {
+        if(i == 6 & j == 6){
+          next
+        }
+        arr <- c(arr, grayImage_4[col_i-6+j, row_i-6+i])
+      }
+    }
+    mean_arr <- mean(arr)
+    var_arr <- var(arr)
+    
+    lower_limit <- mean_arr - 3*sqrt(var_arr/120)
+    upper_limit <- mean_arr + 3*sqrt(var_arr/120)
+    
+    if(grayImage_4[col_i, row_i] < lower_limit | grayImage_4[col_i, row_i] > upper_limit){
+      grayImage_Prop_4[col_i, row_i] <- 0
+    }else{
+      grayImage_Prop_4[col_i, row_i] <- 1
+    }
+    
+  }
+}
+
+plot(grayImage_Prop_4)
+
+
+grayImage_5 <- grayscale(colorImage_5)
+grayImage_Prop_5 <- grayImage_5
+
+for (row_i in 6:507) {
+  for (col_i in 6:507) {
+
+    arr <- numeric(0)
+    for (i in 1:11) {
+      for (j in 1:11) {
+        if(i == 6 & j == 6){
+          next
+        }
+        arr <- c(arr, grayImage_5[col_i-6+j, row_i-6+i])
+      }
+    }
+    mean_arr <- mean(arr)
+    var_arr <- var(arr)
+    
+    lower_limit <- mean_arr - 3*sqrt(var_arr/120)
+    upper_limit <- mean_arr + 3*sqrt(var_arr/120)
+    
+    if(grayImage_5[col_i, row_i] < lower_limit | grayImage_5[col_i, row_i] > upper_limit){
+      grayImage_Prop_5[col_i, row_i] <- 0
+    }else{
+      grayImage_Prop_5[col_i, row_i] <- 1
+    }
+    
+  }
+}
+
+plot(grayImage_Prop_5)
+```
+
+
+# Results
+
+In Linen, there is a correlation between pixels (very small points of Linen) and previous pixels. Pixels luminance may vary consequently however, for example, several pixels in a row having similar brightness may mean that there is a detect in that part of the line, but in simple control charts, the brightness of these pixels may be overlooked since they remain within the control limits, and this may cause a type II error. To avoid that, we need to determine variables for control chart process and these variables must consider most recent observations -means closest pixels both in columns and rows-.
+
+# Conclusions and Future Work
+
+<!-- Summarize your findings and comments regarding your approach. -->
+<!-- What are possible extensions to have a better approach -->
+
+There are many methods for linen defect detection and it is necessary to decide which one is the most efficient among these methods. Considering the methods we discuss in this report, they all have their own advantages and disadvantages. However, it may not be correct to say that a point or group of points containing a defect is connected to the pixels at the other end of the line, so we thought it would be more logical to decide whether a pixel is defective compared to the surrounding pixels in the control chart we created in the last method. Although it is difficult to say for sure whether the result obtained is correct or not, we can say that the Type II error, that is, the miss rate, will be lower than simple methods. In order to develop this method, it may be necessary to calculate how many or which pixels are connected to the pixels that are close to it. Of course, a separate method should be developed to determine this.
+
+# References
